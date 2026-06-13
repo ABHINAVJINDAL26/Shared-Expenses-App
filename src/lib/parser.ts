@@ -69,3 +69,18 @@ function parseCSVLine(line: string): string[] {
   result.push(currentVal);
   return result;
 }
+
+export function normalizeName(name: string | null | undefined): string {
+  if (!name) return "";
+  const cleaned = name.trim().toLowerCase();
+  
+  if (cleaned === "priya s" || cleaned === "priya") return "Priya";
+  if (cleaned === "rohan " || cleaned === "rohan") return "Rohan";
+  if (cleaned === "aisha") return "Aisha";
+  if (cleaned === "meera") return "Meera";
+  if (cleaned === "sam") return "Sam";
+  if (cleaned === "dev") return "Dev";
+  if (cleaned === "kabir" || cleaned === "dev's friend kabir") return "Kabir";
+  
+  return name.charAt(0).toUpperCase() + name.slice(1).trim();
+}
