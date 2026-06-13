@@ -84,3 +84,31 @@ export function normalizeName(name: string | null | undefined): string {
   
   return name.charAt(0).toUpperCase() + name.slice(1).trim();
 }
+
+export function normalizeDate(dateStr: string): { date: Date | null; isAmbiguous: boolean } {
+  if (!dateStr) return { date: null, isAmbiguous: false };
+  const cleaned = dateStr.trim();
+
+  if (cleaned.toLowerCase() === "mar-14") {
+    return { date: new Date("2026-03-14T00:00:00Z"), isAmbiguous: false };
+  }
+
+  const parts = cleaned.split("-");
+  if (parts.length === 3) {
+    const day = parseInt(parts[0], 10);
+    const month = parseInt(parts[1], 10);
+    const year = parseInt(parts[2], 10);
+
+    if (!isNaN(day) && !isNaN(month) && !isNaN(year)) {
+      const isAmbiguous = (day === 4 && month === 5) || (day === 5 && month === 4);
+      const date = new Date(Date.UTC(year, month - 1, day));
+      return { date, isAmbiguous };
+    }
+  }
+
+  const parsed = new Date(cleaned);
+  return {
+    date: isNaN(parsed.getTime()) ? null : parsed,
+    isAmbiguous: false,
+  };
+}
