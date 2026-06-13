@@ -13,6 +13,8 @@ model User {
   isGuest             Boolean        @default(false)
   createdAt           DateTime       @default(now())
   memberships         GroupMember[]
+  paidExpenses        Expense[]      @relation("PaidBy")
+  splits              ExpenseSplit[]
 }
 
 model Group {
@@ -20,6 +22,7 @@ model Group {
   name          String
   createdAt     DateTime      @default(now())
   members       GroupMember[]
+  expenses      Expense[]
 }
 
 model GroupMember {
@@ -32,4 +35,39 @@ model GroupMember {
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([groupId, userId])
+}
+
+model Expense {
+  id               String         @id @default(uuid())
+  groupId          String
+  description      String
+  amount           Float
+  currency         String
+  amountInInr      Float
+  exchangeRateUsed Float
+  paidById         String
+  splitType        String
+  expenseDate      DateTime
+  createdAt        DateTime       @default(now())
+  source           String
+  importBatchId    String?
+  status           String
+  notes            String?
+
+  group       Group          @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  paidBy      User           @relation("PaidBy", fields: [paidById], references: [id], onDelete: Cascade)
+  splits      ExpenseSplit[]
+}
+
+model ExpenseSplit {
+  id                String @id @default(uuid())
+  expenseId         String
+  userId            String
+  shareValue        Float
+  computedAmountInr Float
+
+  expense Expense @relation(fields: [expenseId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([expenseId, userId])
 }
