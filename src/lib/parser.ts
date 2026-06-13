@@ -112,3 +112,40 @@ export function normalizeDate(dateStr: string): { date: Date | null; isAmbiguous
     isAmbiguous: false,
   };
 }
+
+export function normalizeAmountAndCurrency(
+  amountStr: string,
+  currencyStr: string | null | undefined
+): {
+  amount: number;
+  currency: string;
+  computedAmountInr: number;
+  exchangeRateUsed: number;
+  isNegative: boolean;
+} {
+  let cleanedAmount = amountStr.replace(/[,"]/g, "").trim();
+  let amount = parseFloat(cleanedAmount);
+  if (isNaN(amount)) {
+    amount = 0;
+  }
+
+  const isNegative = amount < 0;
+  const roundedAmount = Math.round(amount * 100) / 100;
+
+  let currency = currencyStr ? currencyStr.trim().toUpperCase() : "";
+  let exchangeRateUsed = 1.0;
+
+  if (currency === "USD") {
+    exchangeRateUsed = 83.0;
+  }
+
+  const computedAmountInr = Math.round(roundedAmount * exchangeRateUsed * 100) / 100;
+
+  return {
+    amount: roundedAmount,
+    currency,
+    computedAmountInr,
+    exchangeRateUsed,
+    isNegative,
+  };
+}
