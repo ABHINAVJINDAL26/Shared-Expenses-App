@@ -4,12 +4,13 @@ import { PrismaLibSql } from "@prisma/adapter-libsql";
 import { createClient } from "@libsql/client";
 
 const adapter = new PrismaLibSql({
-  url: "file:dev.db",
+  url: process.env.DATABASE_URL || "file:dev.db",
+  authToken: process.env.DATABASE_AUTH_TOKEN,
 });
 const prisma = new PrismaClient({ adapter });
 
 console.log("Debug - DATABASE_URL env:", process.env.DATABASE_URL);
-console.log("Debug - libsql url:", "file:dev.db");
+console.log("Debug - libsql url:", process.env.DATABASE_URL || "file:dev.db");
 
 async function main() {
   console.log("Seeding database...");

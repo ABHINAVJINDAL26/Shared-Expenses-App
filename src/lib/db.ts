@@ -7,15 +7,20 @@ declare global {
 
 let prisma: PrismaClient;
 
+const url = process.env.DATABASE_URL || "file:dev.db";
+const authToken = process.env.DATABASE_AUTH_TOKEN;
+
 if (process.env.NODE_ENV === "production") {
   const adapter = new PrismaLibSql({
-    url: "file:dev.db",
+    url,
+    authToken,
   });
   prisma = new PrismaClient({ adapter });
 } else {
   if (!global.prisma) {
     const adapter = new PrismaLibSql({
-      url: "file:dev.db",
+      url,
+      authToken,
     });
     global.prisma = new PrismaClient({ adapter });
   }

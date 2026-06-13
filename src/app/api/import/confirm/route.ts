@@ -341,6 +341,7 @@ export async function POST(req: NextRequest) {
       transactionActions.push(
         prisma.expense.create({
           data: {
+            id: expenseId,
             groupId: batch.groupId,
             description: row.description,
             amount,
