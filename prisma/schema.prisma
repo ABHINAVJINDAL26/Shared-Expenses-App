@@ -1,4 +1,4 @@
-﻿datasource db {
+datasource db {
   provider = "sqlite"
 }
 
@@ -15,6 +15,8 @@ model User {
   memberships         GroupMember[]
   paidExpenses        Expense[]      @relation("PaidBy")
   splits              ExpenseSplit[]
+  sentSettlements     Settlement[]   @relation("SentSettlements")
+  receivedSettlements Settlement[]   @relation("ReceivedSettlements")
 }
 
 model Group {
@@ -23,6 +25,8 @@ model Group {
   createdAt     DateTime      @default(now())
   members       GroupMember[]
   expenses      Expense[]
+  settlements   Settlement[]
+  importBatches ImportBatch[]
 }
 
 model GroupMember {
@@ -46,16 +50,17 @@ model Expense {
   amountInInr      Float
   exchangeRateUsed Float
   paidById         String
-  splitType        String
+  splitType        String         // 'equal' | 'unequal' | 'percentage' | 'share'
   expenseDate      DateTime
   createdAt        DateTime       @default(now())
-  source           String
+  source           String         // 'manual' | 'csv_import'
   importBatchId    String?
-  status           String
+  status           String         // 'active' | 'flagged' | 'archived'
   notes            String?
 
   group       Group          @relation(fields: [groupId], references: [id], onDelete: Cascade)
   paidBy      User           @relation("PaidBy", fields: [paidById], references: [id], onDelete: Cascade)
+  importBatch ImportBatch?   @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
   splits      ExpenseSplit[]
 }
 
@@ -63,11 +68,54 @@ model ExpenseSplit {
   id                String @id @default(uuid())
   expenseId         String
   userId            String
-  shareValue        Float
-  computedAmountInr Float
+  shareValue        Float  // holds the percentage (e.g. 30) or share count (e.g. 2) or amount (e.g. 700) depending on splitType. For equal, it's 1.
+  computedAmountInr Float  // final share in INR
 
   expense Expense @relation(fields: [expenseId], references: [id], onDelete: Cascade)
   user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([expenseId, userId])
+}
+
+model Settlement {
+  id          String   @id @default(uuid())
+  groupId     String
+  fromUserId  String
+  toUserId    String
+  amount      Float
+  currency    String
+  amountInInr Float
+  note        String?
+  settledAt   DateTime
+  source      String   // 'manual' | 'csv_import'
+
+  group    Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  fromUser User  @relation("SentSettlements", fields: [fromUserId], references: [id], onDelete: Cascade)
+  toUser   User  @relation("ReceivedSettlements", fields: [toUserId], references: [id], onDelete: Cascade)
+}
+
+model ImportBatch {
+  id         String          @id @default(uuid())
+  groupId    String
+  filename   String
+  importedAt DateTime        @default(now())
+  status     String          // 'pending' | 'completed' | 'failed'
+  
+  group     Group           @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  anomalies ImportAnomaly[]
+  expenses  Expense[]
+}
+
+model ImportAnomaly {
+  id              String      @id @default(uuid())
+  importBatchId   String
+  rowNumber       Int
+  rawRowData      String      // JSON string of the row
+  anomalyType     String      // 'duplicate' | 'percentage' | 'membership' | 'missing_payer' etc
+  description     String
+  suggestedAction String
+  userDecision    String?     // what the user decided to do
+  resolved        Boolean     @default(false)
+
+  importBatch ImportBatch @relation(fields: [importBatchId], references: [id], onDelete: Cascade)
 }
