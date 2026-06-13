@@ -1,0 +1,35 @@
+﻿datasource db {
+  provider = "sqlite"
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id                  String         @id @default(uuid())
+  name                String         @unique
+  email               String?        @unique
+  isGuest             Boolean        @default(false)
+  createdAt           DateTime       @default(now())
+  memberships         GroupMember[]
+}
+
+model Group {
+  id            String        @id @default(uuid())
+  name          String
+  createdAt     DateTime      @default(now())
+  members       GroupMember[]
+}
+
+model GroupMember {
+  id        String    @id @default(uuid())
+  groupId   String
+  userId    String
+  joinedAt  DateTime
+  leftAt    DateTime?
+  group     Group     @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([groupId, userId])
+}
