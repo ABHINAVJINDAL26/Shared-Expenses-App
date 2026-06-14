@@ -58,3 +58,20 @@ This document log details the AI tools used, key prompts, and concrete instances
 *   **How we caught it:** Executing the script crashed with:
     `TypeError: import_adapter_libsql.PrismaLibSQL is not a constructor`
 *   **What was changed:** We inspected the exports of `@prisma/adapter-libsql` by running a Node.js shell command. We discovered that the class is exported as `PrismaLibSql` (with a lowercase 'q' and 'l' in 'Sql') rather than `PrismaLibSQL`. We modified the import to `PrismaLibSql` to fix the compilation error.
+
+---
+
+### Case 4: Reference Variable Typo in Integration Test Suite
+*   **What was asked:** "Write a comprehensive integration test to verify the transaction imports pipeline."
+*   **What the AI produced:**
+    ```typescript
+    transactionActions.push(
+      prisma.importBatch.update({
+        where: { id: importBatchId },
+        data: { status: "completed" },
+      })
+    );
+    ```
+*   **How we caught it:** When running `npx tsx src/tests/integration.test.ts`, the TS compiler/runtime crashed with a reference error stating `importBatchId` was not defined.
+*   **What was changed:** We reviewed the test and saw that the generated batch was stored in the `importBatch` object. We corrected the lookup key from `importBatchId` to `importBatch.id` on line 426, which allowed the test to execute and verify the full transactional pipeline cleanly.
+

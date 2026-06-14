@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
+import { useRouter } from "next/navigation";
 
 interface User {
   id: string;
@@ -63,10 +64,13 @@ interface ImportReport {
 }
 
 export default function SharedExpensesDashboard() {
+  const router = useRouter();
   const [activeTab, setActiveTab] = useState<"balances" | "import" | "members">("balances");
   const [users, setUsers] = useState<User[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
+  const [selectedGroupId, setSelectedGroupId] = useState<string>("");
   const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [isAuthLoading, setIsAuthLoading] = useState(true);
 
   // Import State
   const [file, setFile] = useState<File | null>(null);
@@ -76,6 +80,11 @@ export default function SharedExpensesDashboard() {
   const [normalizedRows, setNormalizedRows] = useState<any[]>([]);
   const [decisions, setDecisions] = useState<Record<number, any>>({});
   const [importReport, setImportReport] = useState<ImportReport | null>(null);
+  const [lastImportDetails, setLastImportDetails] = useState<{
+    anomalies: Anomaly[];
+    decisions: Record<number, any>;
+    summary: ImportReport;
+  } | null>(null);
 
   // Balances State
   const [pairwiseBalances, setPairwiseBalances] = useState<PairwiseBalance[]>([]);
@@ -83,8 +92,27 @@ export default function SharedExpensesDashboard() {
   const [selectedTraceKey, setSelectedTraceKey] = useState<string | null>(null);
   const [balancesCount, setBalancesCount] = useState({ expenses: 0, settlements: 0 });
 
-  // Manual Settlement Modal
+  // Modals Visibility
   const [isSettlementOpen, setIsSettlementOpen] = useState(false);
+  const [isExpenseOpen, setIsExpenseOpen] = useState(false);
+  const [isGroupOpen, setIsGroupOpen] = useState(false);
+  const [isAddMemberOpen, setIsAddMemberOpen] = useState(false);
+  const [isEditMemberTimelineOpen, setIsEditMemberTimelineOpen] = useState(false);
+
+  // Form States
+  const [editingExpenseId, setEditingExpenseId] = useState<string | null>(null);
+  const [expenseForm, setExpenseForm] = useState({
+    description: "",
+    amount: "",
+    currency: "INR",
+    exchangeRateUsed: "1.00",
+    paidById: "",
+    splitType: "equal",
+    expenseDate: new Date().toISOString().substring(0, 10),
+    splits: {} as Record<string, string>, // userId -> checked/amount/pct/share
+    notes: "",
+  });
+
   const [settleForm, setSettleForm] = useState({
     toUserId: "",
     amount: "",
@@ -92,30 +120,66 @@ export default function SharedExpensesDashboard() {
     note: "",
   });
 
+  const [groupForm, setGroupForm] = useState({
+    name: "",
+    memberUserIds: [] as string[],
+  });
+
+  const [addMemberForm, setAddMemberForm] = useState({
+    userName: "",
+    email: "",
+    isGuest: false,
+    joinedAt: new Date().toISOString().substring(0, 10),
+    leftAt: "",
+  });
+
+  const [selectedMemberId, setSelectedMemberId] = useState<string>("");
+  const [memberTimelineForm, setMemberTimelineForm] = useState({
+    joinedAt: "",
+    leftAt: "",
+  });
+
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Fetch initial users and groups
-  const fetchData = async () => {
+  // Fetch Session User
+  const checkSession = async () => {
     try {
-      const res = await fetch("/api/users");
+      const res = await fetch("/api/auth/session");
       const data = await res.json();
-      if (data.users && data.users.length > 0) {
-        setUsers(data.users);
-        setGroups(data.groups || []);
-        
-        // Default current user to Aisha (not guest)
-        const defaultUser = data.users.find((u: any) => u.name === "Aisha") || data.users[0];
-        setCurrentUser(defaultUser);
+      if (data.user) {
+        setCurrentUser(data.user);
+      } else {
+        router.push("/login");
       }
     } catch (err) {
-      console.error("Failed to fetch users:", err);
+      router.push("/login");
+    } finally {
+      setIsAuthLoading(false);
     }
   };
 
-  // Fetch balances
-  const fetchBalances = async () => {
+  // Fetch initial users and groups
+  const fetchData = async (targetGroupId?: string) => {
     try {
-      const res = await fetch("/api/balances");
+      const res = await fetch("/api/users");
+      const data = await res.json();
+      setUsers(data.users || []);
+      setGroups(data.groups || []);
+      
+      if (data.groups && data.groups.length > 0) {
+        const defaultGroupId = targetGroupId || selectedGroupId || data.groups[0].id;
+        setSelectedGroupId(defaultGroupId);
+      }
+    } catch (err) {
+      console.error("Failed to fetch metadata:", err);
+    }
+  };
+
+  // Fetch balances for selected group
+  const fetchBalances = async () => {
+    if (!selectedGroupId) return;
+    try {
+      const res = await fetch(`/api/balances?groupId=${selectedGroupId}`);
       const data = await res.json();
       if (data.success) {
         setPairwiseBalances(data.pairwiseBalances || []);
@@ -138,21 +202,47 @@ export default function SharedExpensesDashboard() {
   };
 
   useEffect(() => {
-    fetchData();
-    fetchBalances();
+    checkSession();
   }, []);
+
+  useEffect(() => {
+    if (currentUser) {
+      fetchData();
+    }
+  }, [currentUser]);
+
+  useEffect(() => {
+    if (selectedGroupId) {
+      fetchBalances();
+    }
+  }, [selectedGroupId]);
+
+  const activeGroup = groups.find((g) => g.id === selectedGroupId);
+
+  // Handle Logout
+  const handleLogout = async () => {
+    try {
+      await fetch("/api/auth/logout", { method: "POST" });
+      router.push("/login");
+      router.refresh();
+    } catch (err) {
+      console.error("Logout failed:", err);
+    }
+  };
 
   // Handle file select & trigger upload/parse
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFile = e.target.files?.[0];
-    if (!selectedFile) return;
+    if (!selectedFile || !selectedGroupId) return;
 
     setFile(selectedFile);
     setIsUploading(true);
     setImportReport(null);
+    setLastImportDetails(null);
 
     const formData = new FormData();
     formData.append("file", selectedFile);
+    formData.append("groupId", selectedGroupId);
 
     try {
       const res = await fetch("/api/import", {
@@ -169,11 +259,10 @@ export default function SharedExpensesDashboard() {
         // Initialize decisions with suggested actions
         const initialDecisions: Record<number, any> = {};
         data.anomalies.forEach((a: Anomaly) => {
-          // Defaults based on suggested actions
           if (a.anomalyType === "duplicate" || a.anomalyType === "zero_amount") {
             initialDecisions[a.rowNumber] = { action: "skip" };
           } else if (a.anomalyType === "fuzzy_duplicate") {
-            initialDecisions[a.rowNumber] = { action: "skip" }; // keep first, skip second
+            initialDecisions[a.rowNumber] = { action: "skip" };
           } else if (a.anomalyType === "percentage_sum") {
             initialDecisions[a.rowNumber] = { action: "normalize_percentages" };
           } else if (a.anomalyType === "stale_membership") {
@@ -187,7 +276,6 @@ export default function SharedExpensesDashboard() {
           } else if (a.anomalyType === "contradictory_split") {
             initialDecisions[a.rowNumber] = { action: "use_shares" };
           } else if (a.anomalyType === "ambiguous_date") {
-            // Pick April 5 (2026-04-05) for 05-04-2026, May 4 (2026-05-04) for 04-05-2026
             const rawDate = a.rawRowData.date || "";
             const isMay4 = rawDate.startsWith("04-05");
             initialDecisions[a.rowNumber] = {
@@ -197,7 +285,7 @@ export default function SharedExpensesDashboard() {
           } else if (a.anomalyType === "missing_payer") {
             initialDecisions[a.rowNumber] = {
               action: "assign_payer",
-              payerName: "Rohan", // Default fallback assign
+              payerName: "Rohan",
             };
           } else {
             initialDecisions[a.rowNumber] = { action: "import" };
@@ -206,9 +294,11 @@ export default function SharedExpensesDashboard() {
         setDecisions(initialDecisions);
       } else {
         alert("Upload error: " + (data.error || "Unknown error"));
+        setFile(null);
       }
     } catch (err: any) {
       alert("Network error parsing CSV: " + err.message);
+      setFile(null);
     } finally {
       setIsUploading(false);
     }
@@ -243,12 +333,16 @@ export default function SharedExpensesDashboard() {
       const data = await res.json();
       if (data.success) {
         setImportReport(data.summary);
+        setLastImportDetails({
+          anomalies,
+          decisions,
+          summary: data.summary,
+        });
         setStagedBatchId(null);
         setAnomalies([]);
         setNormalizedRows([]);
         setFile(null);
         
-        // Refresh Balances & Users list
         await fetchBalances();
         await fetchData();
       } else {
@@ -262,13 +356,14 @@ export default function SharedExpensesDashboard() {
   // Submit manual settlement
   const handleManualSettlementSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!currentUser) return;
+    if (!currentUser || !selectedGroupId) return;
 
     try {
       const res = await fetch("/api/settlements", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          groupId: selectedGroupId,
           fromUserId: currentUser.id,
           toUserId: settleForm.toUserId,
           amount: parseFloat(settleForm.amount),
@@ -290,27 +385,339 @@ export default function SharedExpensesDashboard() {
     }
   };
 
-  // Filter pairwise balances to only show relationships affecting the current active user (Sam/Meera check)
-  const filteredPairwiseBalances = pairwiseBalances.filter((b) => {
-    if (!currentUser) return true;
-    return b.fromUserId === currentUser.id || b.toUserId === currentUser.id;
-  });
+  // Helper: check if group member is active on chosen date
+  const isMemberActiveOnDate = (m: GroupMember, dateStr: string) => {
+    const dateVal = new Date(dateStr + "T00:00:00Z");
+    const joined = new Date(m.joinedAt);
+    const left = m.leftAt ? new Date(m.leftAt) : null;
+    return dateVal >= joined && (!left || dateVal <= left);
+  };
 
-  // Calculate Net balance summary for current switched user
+  // Get active members on the chosen expense date
+  const getActiveTimelineMembers = () => {
+    if (!activeGroup) return [];
+    return activeGroup.members.filter((m) =>
+      isMemberActiveOnDate(m, expenseForm.expenseDate)
+    );
+  };
+
+  // Initialize splits on Form
+  const initFormSplits = (type: string, activeMembersList: GroupMember[]) => {
+    const defaultSplits: Record<string, string> = {};
+    activeMembersList.forEach((m) => {
+      if (type === "equal") {
+        defaultSplits[m.userId] = "true"; // checkbox checked
+      } else if (type === "percentage") {
+        defaultSplits[m.userId] = (100 / activeMembersList.length).toFixed(1);
+      } else if (type === "share") {
+        defaultSplits[m.userId] = "1";
+      } else if (type === "unequal") {
+        defaultSplits[m.userId] = "0";
+      }
+    });
+    setExpenseForm((prev) => ({
+      ...prev,
+      splitType: type,
+      splits: defaultSplits,
+    }));
+  };
+
+  // Open Expense Modal (Add Mode)
+  const openAddExpense = () => {
+    if (!currentUser || !selectedGroupId || !activeGroup) return;
+    setEditingExpenseId(null);
+    const today = new Date().toISOString().substring(0, 10);
+    const activeMembers = activeGroup.members.filter((m) =>
+      isMemberActiveOnDate(m, today)
+    );
+
+    const defaultSplits: Record<string, string> = {};
+    activeMembers.forEach((m) => {
+      defaultSplits[m.userId] = "true";
+    });
+
+    setExpenseForm({
+      description: "",
+      amount: "",
+      currency: "INR",
+      exchangeRateUsed: "1.00",
+      paidById: currentUser.id,
+      splitType: "equal",
+      expenseDate: today,
+      splits: defaultSplits,
+      notes: "",
+    });
+    setIsExpenseOpen(true);
+  };
+
+  // Open Expense Modal (Edit Mode)
+  const openEditExpense = async (expenseId: string) => {
+    try {
+      const res = await fetch(`/api/expenses/${expenseId}`);
+      const data = await res.json();
+
+      if (data.success && data.expense) {
+        const exp = data.expense;
+        setEditingExpenseId(expenseId);
+
+        const loadedSplits: Record<string, string> = {};
+        exp.splits.forEach((s: any) => {
+          if (exp.splitType === "equal") {
+            loadedSplits[s.userId] = "true";
+          } else {
+            loadedSplits[s.userId] = s.shareValue.toString();
+          }
+        });
+
+        setExpenseForm({
+          description: exp.description,
+          amount: exp.amount.toString(),
+          currency: exp.currency,
+          exchangeRateUsed: exp.exchangeRateUsed.toString(),
+          paidById: exp.paidById,
+          splitType: exp.splitType,
+          expenseDate: new Date(exp.expenseDate).toISOString().substring(0, 10),
+          splits: loadedSplits,
+          notes: exp.notes || "",
+        });
+        setIsExpenseOpen(true);
+      } else {
+        alert("Failed to load expense details.");
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  // Delete Expense
+  const handleDeleteExpense = async (expenseId: string) => {
+    if (!confirm("Are you sure you want to delete this expense? This action cannot be undone.")) return;
+
+    try {
+      const res = await fetch(`/api/expenses/${expenseId}`, {
+        method: "DELETE",
+      });
+      const data = await res.json();
+      if (data.success) {
+        await fetchBalances();
+      } else {
+        alert("Failed to delete expense: " + data.error);
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  // Save manual Expense (Add or Edit)
+  const handleExpenseSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedGroupId) return;
+
+    const amt = parseFloat(expenseForm.amount);
+    if (isNaN(amt) || amt <= 0) {
+      alert("Please enter a valid positive amount");
+      return;
+    }
+
+    const activeMembers = getActiveTimelineMembers();
+    const splitsPayload = activeMembers
+      .filter((m) => {
+        if (expenseForm.splitType === "equal") {
+          return expenseForm.splits[m.userId] === "true";
+        }
+        return true;
+      })
+      .map((m) => {
+        let shareValue = 1.0;
+        if (expenseForm.splitType === "percentage") {
+          shareValue = parseFloat(expenseForm.splits[m.userId]) || 0;
+        } else if (expenseForm.splitType === "share") {
+          shareValue = parseFloat(expenseForm.splits[m.userId]) || 0;
+        } else if (expenseForm.splitType === "unequal") {
+          shareValue = parseFloat(expenseForm.splits[m.userId]) || 0;
+        }
+        return {
+          userId: m.userId,
+          shareValue,
+        };
+      });
+
+    if (splitsPayload.length === 0) {
+      alert("At least one member must be selected in the split");
+      return;
+    }
+
+    // Front-end percentage validation
+    if (expenseForm.splitType === "percentage") {
+      const sum = splitsPayload.reduce((s, split) => s + split.shareValue, 0);
+      if (Math.abs(sum - 100) > 0.1) {
+        alert(`Split percentages must sum to exactly 100%. (Current sum is ${sum}%)`);
+        return;
+      }
+    }
+
+    // Front-end unequal sum validation
+    if (expenseForm.splitType === "unequal") {
+      const rate = expenseForm.currency === "USD" ? parseFloat(expenseForm.exchangeRateUsed) || 83 : 1;
+      const amountInr = amt * rate;
+      const sum = splitsPayload.reduce((s, split) => s + split.shareValue, 0);
+      if (Math.abs(sum - amountInr) > 1.00) {
+        alert(`Split amounts (₹${sum.toFixed(2)}) must sum to total amount in INR (₹${amountInr.toFixed(2)}).`);
+        return;
+      }
+    }
+
+    const payload = {
+      groupId: selectedGroupId,
+      description: expenseForm.description,
+      amount: amt,
+      currency: expenseForm.currency,
+      exchangeRateUsed: parseFloat(expenseForm.exchangeRateUsed) || 1.00,
+      paidById: expenseForm.paidById,
+      splitType: expenseForm.splitType,
+      expenseDate: expenseForm.expenseDate,
+      splits: splitsPayload,
+      notes: expenseForm.notes,
+    };
+
+    try {
+      const url = editingExpenseId ? `/api/expenses/${editingExpenseId}` : "/api/expenses";
+      const method = editingExpenseId ? "PUT" : "POST";
+
+      const res = await fetch(url, {
+        method,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await res.json();
+      if (data.success) {
+        setIsExpenseOpen(false);
+        setEditingExpenseId(null);
+        await fetchBalances();
+      } else {
+        alert("Failed to save expense: " + data.error);
+      }
+    } catch (err: any) {
+      alert("Network error saving expense: " + err.message);
+    }
+  };
+
+  // Save manual Group
+  const handleGroupSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!groupForm.name) return;
+
+    try {
+      const res = await fetch("/api/groups", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(groupForm),
+      });
+      const data = await res.json();
+
+      if (data.success && data.group) {
+        setIsGroupOpen(false);
+        setGroupForm({ name: "", memberUserIds: [] });
+        await fetchData(data.group.id);
+      } else {
+        alert("Failed to create group: " + data.error);
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  // Save manual Group Member Add
+  const handleAddMemberSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedGroupId || !addMemberForm.userName) return;
+
+    try {
+      const res = await fetch(`/api/groups/${selectedGroupId}/members`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          userName: addMemberForm.userName,
+          email: addMemberForm.email,
+          isGuest: addMemberForm.isGuest,
+          joinedAt: addMemberForm.joinedAt,
+          leftAt: addMemberForm.leftAt || null,
+        }),
+      });
+      const data = await res.json();
+
+      if (data.success) {
+        setIsAddMemberOpen(false);
+        setAddMemberForm({ userName: "", email: "", isGuest: false, joinedAt: new Date().toISOString().substring(0, 10), leftAt: "" });
+        await fetchData();
+      } else {
+        alert("Failed to add member: " + data.error);
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  // Save Member Timeline Date Edit
+  const handleUpdateMemberTimelineSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedGroupId || !selectedMemberId) return;
+
+    try {
+      const res = await fetch(`/api/groups/${selectedGroupId}/members`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          groupMemberId: selectedMemberId,
+          joinedAt: memberTimelineForm.joinedAt,
+          leftAt: memberTimelineForm.leftAt || null,
+        }),
+      });
+      const data = await res.json();
+
+      if (data.success) {
+        setIsEditMemberTimelineOpen(false);
+        setSelectedMemberId("");
+        await fetchData();
+        await fetchBalances();
+      } else {
+        alert("Failed to update membership: " + data.error);
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  // Calculate Net User Balance
   const calculateNetUserBalance = () => {
     if (!currentUser) return 0;
     let net = 0;
     pairwiseBalances.forEach((b) => {
       if (b.toUserId === currentUser.id) {
-        net += b.amount; // someone owes current user
+        net += b.amount;
       } else if (b.fromUserId === currentUser.id) {
-        net -= b.amount; // current user owes someone
+        net -= b.amount;
       }
     });
     return Math.round(net * 100) / 100;
   };
 
   const currentNetBalance = calculateNetUserBalance();
+
+  // Filter balance nets to show relationships with logged-in user
+  const filteredPairwiseBalances = pairwiseBalances.filter((b) => {
+    if (!currentUser) return true;
+    return b.fromUserId === currentUser.id || b.toUserId === currentUser.id;
+  });
+
+  if (isAuthLoading) {
+    return (
+      <div style={{ display: "flex", justifyContent: "center", alignItems: "center", minHeight: "100vh", backgroundColor: "var(--bg-primary)" }}>
+        <div className="logo-icon" style={{ animation: "pulse 1.5s infinite" }}>S</div>
+      </div>
+    );
+  }
 
   return (
     <div className="app-container">
@@ -321,33 +728,42 @@ export default function SharedExpensesDashboard() {
           <h1 className="logo-text">Splitwise Pro</h1>
         </div>
 
-        {/* Switched Identity Selector */}
-        <div className="user-selector">
-          <span style={{ fontSize: "0.85rem", color: "var(--text-secondary)" }}>Active Identity:</span>
+        <div style={{ display: "flex", alignItems: "center", gap: "1.5rem" }}>
+          {/* Group Switcher Selector */}
+          <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+            <span style={{ fontSize: "0.85rem", color: "var(--text-secondary)" }}>Active Group:</span>
+            <select
+              className="select-input"
+              value={selectedGroupId}
+              onChange={(e) => setSelectedGroupId(e.target.value)}
+            >
+              {groups.map((g) => (
+                <option key={g.id} value={g.id}>
+                  {g.name}
+                </option>
+              ))}
+            </select>
+            <button 
+              className="btn btn-secondary" 
+              style={{ padding: "0.45rem 0.75rem", fontSize: "0.8rem" }}
+              onClick={() => setIsGroupOpen(true)}
+            >
+              + Add Group
+            </button>
+          </div>
+
+          {/* User Profile Info & Logout */}
           {currentUser && (
-            <div className="active-user-pill">
-              <span className="user-indicator-dot"></span>
-              <span style={{ fontWeight: 600 }}>{currentUser.name}</span>
+            <div style={{ display: "flex", alignItems: "center", gap: "1rem" }}>
+              <div className="active-user-pill">
+                <span className="user-indicator-dot"></span>
+                <span style={{ fontWeight: 600 }}>{currentUser.name}</span>
+              </div>
+              <button className="btn btn-secondary" style={{ padding: "0.45rem 0.75rem", fontSize: "0.8rem" }} onClick={handleLogout}>
+                Logout
+              </button>
             </div>
           )}
-          <select
-            className="select-input"
-            value={currentUser?.id || ""}
-            onChange={(e) => {
-              const matched = users.find((u) => u.id === e.target.value);
-              if (matched) {
-                setCurrentUser(matched);
-                // Clear trace key on switch so it refreshes
-                setSelectedTraceKey(null);
-              }
-            }}
-          >
-            {users.filter(u => !u.isGuest).map((u) => (
-              <option key={u.id} value={u.id}>
-                {u.name}
-              </option>
-            ))}
-          </select>
         </div>
       </header>
 
@@ -425,17 +841,6 @@ export default function SharedExpensesDashboard() {
               {filteredPairwiseBalances.length === 0 ? (
                 <div style={{ textAlign: "center", padding: "3rem 1rem", color: "var(--text-secondary)" }}>
                   <p>All settled up! No active debts found for {currentUser?.name}.</p>
-                  <button 
-                    className="btn btn-secondary" 
-                    style={{ marginTop: "1rem" }}
-                    onClick={() => {
-                      // switch to another user to see if they have balances
-                      const other = users.find(u => u.id !== currentUser?.id && !u.isGuest);
-                      if (other) setCurrentUser(other);
-                    }}
-                  >
-                    Switch Identity
-                  </button>
                 </div>
               ) : (
                 <div className="pairwise-list">
@@ -467,30 +872,38 @@ export default function SharedExpensesDashboard() {
                 </div>
               )}
 
-              {/* Record manual settlement button */}
-              <button 
-                className="btn btn-primary" 
-                style={{ width: "100%", marginTop: "1.5rem" }}
-                onClick={() => {
-                  if (currentUser) {
-                    // Prepopulate modal
-                    const firstDebt = filteredPairwiseBalances[0];
-                    let defaultToUserId = "";
-                    if (firstDebt) {
-                      defaultToUserId = firstDebt.fromUserId === currentUser.id ? firstDebt.toUserId : firstDebt.fromUserId;
+              {/* Action Buttons */}
+              <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem", marginTop: "1.5rem" }}>
+                <button 
+                  className="btn btn-primary" 
+                  style={{ width: "100%" }}
+                  onClick={openAddExpense}
+                >
+                  + Add Shared Expense
+                </button>
+                <button 
+                  className="btn btn-secondary" 
+                  style={{ width: "100%" }}
+                  onClick={() => {
+                    if (currentUser) {
+                      const firstDebt = filteredPairwiseBalances[0];
+                      let defaultToUserId = "";
+                      if (firstDebt) {
+                        defaultToUserId = firstDebt.fromUserId === currentUser.id ? firstDebt.toUserId : firstDebt.fromUserId;
+                      }
+                      setSettleForm({
+                        toUserId: defaultToUserId || users.find(u => u.id !== currentUser.id)?.id || "",
+                        amount: "",
+                        currency: "INR",
+                        note: "",
+                      });
+                      setIsSettlementOpen(true);
                     }
-                    setSettleForm({
-                      toUserId: defaultToUserId || users.find(u => u.id !== currentUser.id)?.id || "",
-                      amount: "",
-                      currency: "INR",
-                      note: "",
-                    });
-                    setIsSettlementOpen(true);
-                  }
-                }}
-              >
-                Record Payment / Settle Debt
-              </button>
+                  }}
+                >
+                  Record Payment / Settle Debt
+                </button>
+              </div>
             </div>
 
             {/* Trace Drilldown (Rohan's requirement) */}
@@ -508,35 +921,24 @@ export default function SharedExpensesDashboard() {
                     <div className="trace-items-list">
                       {traces[selectedTraceKey].map((item) => {
                         const isSettlement = item.type === "settlement";
-                        
-                        // Check if current user is the payer of this trace item
                         const currentUserPaid = item.payerId === currentUser?.id;
                         
-                        // Formatting positive/negative impact
-                        // If it's an expense and current user paid: they are owed +share
-                        // If it's an expense and other user paid: they owe -share
-                        // If it's a settlement and current user sent: reduces debt +settle
-                        // If it's a settlement and other user sent: reduces debt -settle
                         let displayPrefix = "";
                         let displayColor = "var(--text-primary)";
                         
                         if (isSettlement) {
                           if (currentUserPaid) {
-                            // You sent payment -> reduces what you owe
                             displayPrefix = "+";
                             displayColor = "var(--success)";
                           } else {
-                            // They sent payment -> reduces what they owe you
                             displayPrefix = "-";
                             displayColor = "var(--danger)";
                           }
                         } else {
                           if (currentUserPaid) {
-                            // You paid -> other owes you their share
                             displayPrefix = "+";
                             displayColor = "var(--success)";
                           } else {
-                            // They paid -> you owe your share
                             displayPrefix = "-";
                             displayColor = "var(--danger)";
                           }
@@ -555,13 +957,35 @@ export default function SharedExpensesDashboard() {
                               </div>
                             </div>
                             
-                            <div className="trace-amount-details">
-                              <span className="trace-computed-val" style={{ color: displayColor }}>
-                                {displayPrefix}₹{item.yourShare.toLocaleString()}
-                              </span>
-                              <span className="trace-raw-val">
-                                Total: {item.amountInr !== item.yourShare ? `₹${item.amountInr.toLocaleString()}` : "direct"}
-                              </span>
+                            <div style={{ display: "flex", alignItems: "center", gap: "1rem" }}>
+                              <div className="trace-amount-details" style={{ textAlign: "right" }}>
+                                <span className="trace-computed-val" style={{ color: displayColor }}>
+                                  {displayPrefix}₹{item.yourShare.toLocaleString()}
+                                </span>
+                                <span className="trace-raw-val">
+                                  Total: {item.amountInr !== item.yourShare ? `₹${item.amountInr.toLocaleString()}` : "direct"}
+                                </span>
+                              </div>
+
+                              {/* Manual CRUD Action Buttons */}
+                              {!isSettlement && (
+                                <div style={{ display: "flex", gap: "0.25rem" }}>
+                                  <button 
+                                    className="btn btn-secondary" 
+                                    style={{ padding: "0.25rem 0.5rem", fontSize: "0.75rem" }}
+                                    onClick={() => openEditExpense(item.id)}
+                                  >
+                                    Edit
+                                  </button>
+                                  <button 
+                                    className="btn btn-secondary" 
+                                    style={{ padding: "0.25rem 0.5rem", fontSize: "0.75rem", background: "rgba(239, 68, 68, 0.15)", color: "var(--danger)" }}
+                                    onClick={() => handleDeleteExpense(item.id)}
+                                  >
+                                    Delete
+                                  </button>
+                                </div>
+                              )}
                             </div>
                           </div>
                         );
@@ -584,14 +1008,13 @@ export default function SharedExpensesDashboard() {
         {/* Tab 2: Smart CSV Importer */}
         {activeTab === "import" && (
           <div className="wizard-container">
-            {/* Show Upload Dropzone if no batch is active */}
             {!stagedBatchId && !importReport && (
               <div className="card" style={{ padding: "3rem" }}>
                 <h2 style={{ textAlign: "center", marginBottom: "1.5rem", fontFamily: "var(--font-display)" }}>
                   Import Expenses Export CSV
                 </h2>
                 <p style={{ color: "var(--text-secondary)", textAlign: "center", maxWidth: "600px", margin: "0 auto 2rem" }}>
-                  Upload the roommate's messy spreadsheet. Our engine will detect duplicate entries, ambiguous dates, stale memberships, negative refund calculations, and percentage mismatches, surfacing them for your review.
+                  Upload the roommate's spreadsheet. Our engine will detect duplicate entries, ambiguous dates, stale memberships, negative refund calculations, and percentage mismatches, surfacing them for your review.
                 </p>
 
                 <div 
@@ -601,7 +1024,7 @@ export default function SharedExpensesDashboard() {
                   <div className="upload-icon">📁</div>
                   <h3>{isUploading ? "Processing..." : "Select expenses_export.csv File"}</h3>
                   <p style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>
-                    Upload file as-is without hand edits. Only relational SQL staging will be used.
+                    Upload file as-is. Relational SQL staging wizard will load issues.
                   </p>
                   <input
                     type="file"
@@ -615,7 +1038,7 @@ export default function SharedExpensesDashboard() {
               </div>
             )}
 
-            {/* Show Staged Resolution Wizard if batch is parsed */}
+            {/* Show Staged Resolution Wizard */}
             {stagedBatchId && anomalies.length > 0 && (
               <div className="card">
                 <div className="card-title" style={{ borderBottom: "1px solid var(--border-color)", paddingBottom: "1rem" }}>
@@ -647,9 +1070,8 @@ export default function SharedExpensesDashboard() {
                         <p className="anomaly-desc">{a.description}</p>
 
                         <div className="anomaly-action-container">
-                          {/* Resolution Form mapping to each anomaly type */}
                           
-                          {/* Case A: Duplicates (Exact or Fuzzy) */}
+                          {/* Case A: Duplicates */}
                           {(a.anomalyType === "duplicate" || a.anomalyType === "fuzzy_duplicate") && (
                             <div className="form-group">
                               <label className="form-label">Duplicate Resolution Policy:</label>
@@ -699,15 +1121,6 @@ export default function SharedExpensesDashboard() {
                                   />
                                   <span>Force import (Keep stale member in split)</span>
                                 </label>
-                                <label className="radio-option">
-                                  <input
-                                    type="radio"
-                                    name={`dec-${a.rowNumber}`}
-                                    checked={rowDecision.action === "skip"}
-                                    onChange={() => handleDecisionChange(a.rowNumber, "action", "skip")}
-                                  />
-                                  <span>Skip this entire row</span>
-                                </label>
                               </div>
                             </div>
                           )}
@@ -749,14 +1162,10 @@ export default function SharedExpensesDashboard() {
                                 value={rowDecision.payerName || "Rohan"}
                                 onChange={(e) => handleDecisionChange(a.rowNumber, "payerName", e.target.value)}
                               >
-                                <option value="Aisha">Aisha</option>
-                                <option value="Rohan">Rohan</option>
-                                <option value="Priya">Priya</option>
-                                <option value="Meera">Meera</option>
+                                {activeGroup?.members.map(m => (
+                                  <option key={m.userId} value={m.user.name}>{m.user.name}</option>
+                                ))}
                               </select>
-                              <span style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginTop: "0.25rem" }}>
-                                Select who paid for this expense.
-                              </span>
                             </div>
                           )}
 
@@ -952,10 +1361,19 @@ export default function SharedExpensesDashboard() {
 
             {/* Show Import Report on completion */}
             {importReport && (
-              <div className="card" style={{ borderLeft: "4px solid var(--success)" }}>
-                <h2 style={{ fontSize: "1.4rem", marginBottom: "1rem", color: "var(--success)", fontFamily: "var(--font-display)" }}>
-                  ✓ CSV Import Report Generated
-                </h2>
+              <div className="card printable-section" style={{ borderLeft: "4px solid var(--success)" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem" }}>
+                  <h2 style={{ fontSize: "1.4rem", color: "var(--success)", fontFamily: "var(--font-display)" }}>
+                    ✓ CSV Import Report Generated
+                  </h2>
+                  <button 
+                    className="btn btn-secondary"
+                    style={{ fontSize: "0.8rem", padding: "0.45rem 0.85rem" }}
+                    onClick={() => window.print()}
+                  >
+                    Print / Export PDF
+                  </button>
+                </div>
                 <p style={{ color: "var(--text-secondary)", fontSize: "0.9rem", marginBottom: "1.5rem" }}>
                   The data import batch has been committed. All user decisions were applied, and the pairwise database balances have been updated.
                 </p>
@@ -987,11 +1405,48 @@ export default function SharedExpensesDashboard() {
                   </div>
                 </div>
 
-                <div style={{ display: "flex", gap: "1rem" }}>
+                {/* Detailed Anomaly Audit Log */}
+                {lastImportDetails && lastImportDetails.anomalies.length > 0 && (
+                  <div style={{ marginTop: "2rem", overflowX: "auto" }}>
+                    <h3 style={{ fontSize: "1.1rem", marginBottom: "1rem", fontFamily: "var(--font-display)" }}>Anomaly Resolution Log</h3>
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.85rem", color: "var(--text-secondary)" }}>
+                      <thead>
+                        <tr style={{ borderBottom: "2px solid var(--border-color)", textAlign: "left" }}>
+                          <th style={{ padding: "0.75rem" }}>Row</th>
+                          <th style={{ padding: "0.75rem" }}>Expense Name</th>
+                          <th style={{ padding: "0.75rem" }}>Detected Issue</th>
+                          <th style={{ padding: "0.75rem" }}>Applied Action</th>
+                          <th style={{ padding: "0.75rem", textAlign: "right" }}>Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {lastImportDetails.anomalies.map((a) => {
+                          const decision = lastImportDetails.decisions[a.rowNumber] || { action: "import" };
+                          const isSkipped = decision.action === "skip";
+                          
+                          return (
+                            <tr key={a.id} style={{ borderBottom: "1px solid var(--border-color)" }}>
+                              <td style={{ padding: "0.75rem", fontWeight: 600 }}>{a.rowNumber}</td>
+                              <td style={{ padding: "0.75rem", color: "var(--text-primary)" }}>{a.rawRowData.description}</td>
+                              <td style={{ padding: "0.75rem" }}>{a.description}</td>
+                              <td style={{ padding: "0.75rem", fontFamily: "monospace" }}>{decision.action.toUpperCase()}</td>
+                              <td style={{ padding: "0.75rem", textAlign: "right", color: isSkipped ? "var(--text-muted)" : "var(--success)" }}>
+                                {isSkipped ? "Skipped" : "Resolved"}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+
+                <div style={{ display: "flex", gap: "1rem", marginTop: "2rem" }} className="print-hide">
                   <button 
                     className="btn btn-primary"
                     onClick={() => {
                       setImportReport(null);
+                      setLastImportDetails(null);
                       setActiveTab("balances");
                     }}
                   >
@@ -1001,6 +1456,7 @@ export default function SharedExpensesDashboard() {
                     className="btn btn-secondary"
                     onClick={() => {
                       setImportReport(null);
+                      setLastImportDetails(null);
                     }}
                   >
                     Import Another File
@@ -1014,43 +1470,67 @@ export default function SharedExpensesDashboard() {
         {/* Tab 3: Group Members */}
         {activeTab === "members" && (
           <div className="card">
-            <h2 style={{ fontSize: "1.35rem", marginBottom: "1rem", fontFamily: "var(--font-display)" }}>
-              Group Membership Timeline
-            </h2>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem" }}>
+              <h2 style={{ fontSize: "1.35rem", fontFamily: "var(--font-display)" }}>
+                Group Membership Timeline
+              </h2>
+              <button 
+                className="btn btn-primary" 
+                style={{ padding: "0.45rem 0.85rem", fontSize: "0.85rem" }}
+                onClick={() => setIsAddMemberOpen(true)}
+              >
+                + Add Member/Guest
+              </button>
+            </div>
             <p style={{ color: "var(--text-secondary)", fontSize: "0.9rem", marginBottom: "2rem" }}>
               Roommates' active periods in the flat. Expenses only apply to members during their active timeline.
             </p>
 
             <div className="member-timeline-list">
-              {users.map((u) => {
-                let statusBadge = "badge-expense"; // default
-                let timeline = "Active from Feb 1, 2026 - Present";
+              {activeGroup?.members.map((m) => {
+                let statusBadge = "badge-expense";
+                let isMeera = m.user.name === "Meera";
+                let isSam = m.user.name === "Sam";
                 
-                if (u.name === "Meera") {
+                if (m.leftAt) {
                   statusBadge = "badge-anomaly";
-                  timeline = "Joined Feb 1, 2026 • Moved out Mar 31, 2026";
-                } else if (u.name === "Sam") {
+                } else if (isSam) {
                   statusBadge = "badge-settlement";
-                  timeline = "Joined Apr 8, 2026 • Present";
-                } else if (u.name === "Dev") {
-                  statusBadge = "badge-anomaly";
-                  timeline = "Goa Trip Guest (Mar 8 - Mar 14, 2026)";
-                } else if (u.name === "Kabir") {
-                  statusBadge = "badge-anomaly";
-                  timeline = "Parasailing Day Guest (Mar 11, 2026)";
+                }
+
+                let timeline = `Joined ${new Date(m.joinedAt).toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" })} • Present`;
+                if (m.leftAt) {
+                  timeline = `Joined ${new Date(m.joinedAt).toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" })} • Left ${new Date(m.leftAt).toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" })}`;
                 }
 
                 return (
-                  <div key={u.id} className="member-timeline-card">
+                  <div key={m.id} className="member-timeline-card">
                     <div className="member-time-info">
                       <span className="user-name-highlight" style={{ fontSize: "1.1rem" }}>
-                        {u.name} {u.isGuest && <span style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>(Guest)</span>}
+                        {m.user.name} {m.user.isGuest && <span style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>(Guest)</span>}
                       </span>
                       <span className="member-date-range">{timeline}</span>
                     </div>
-                    <span className={`badge ${statusBadge}`}>
-                      {u.name === "Meera" ? "Inactive" : u.isGuest ? "Guest" : "Active Member"}
-                    </span>
+                    
+                    <div style={{ display: "flex", alignItems: "center", gap: "1rem" }}>
+                      <span className={`badge ${statusBadge}`}>
+                        {m.leftAt ? "Inactive" : m.user.isGuest ? "Guest" : "Active Member"}
+                      </span>
+                      <button 
+                        className="btn btn-secondary"
+                        style={{ padding: "0.3rem 0.6rem", fontSize: "0.75rem" }}
+                        onClick={() => {
+                          setSelectedMemberId(m.id);
+                          setMemberTimelineForm({
+                            joinedAt: new Date(m.joinedAt).toISOString().substring(0, 10),
+                            leftAt: m.leftAt ? new Date(m.leftAt).toISOString().substring(0, 10) : "",
+                          });
+                          setIsEditMemberTimelineOpen(true);
+                        }}
+                      >
+                        Adjust Dates
+                      </button>
+                    </div>
                   </div>
                 );
               })}
@@ -1060,7 +1540,179 @@ export default function SharedExpensesDashboard() {
 
       </main>
 
-      {/* Manual Settlement / Record Payment Modal */}
+      {/* MODAL 1: Create Group */}
+      {isGroupOpen && (
+        <div className="modal-overlay">
+          <div className="modal-content">
+            <div className="modal-header">
+              <h3>Create New Expense Group</h3>
+              <button className="modal-close" onClick={() => setIsGroupOpen(false)}>&times;</button>
+            </div>
+            <form onSubmit={handleGroupSubmit}>
+              <div className="form-group">
+                <label className="form-label">Group Name:</label>
+                <input 
+                  type="text" 
+                  className="text-input" 
+                  style={{ width: "100%" }}
+                  value={groupForm.name} 
+                  onChange={(e) => setGroupForm({ ...groupForm, name: e.target.value })} 
+                  placeholder="e.g. Goa Trip 2026"
+                  required
+                />
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">Select Members to Include:</label>
+                <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem", maxHeight: "150px", overflowY: "auto", padding: "0.5rem", border: "1px solid var(--border-color)", borderRadius: "var(--radius-sm)" }}>
+                  {users.filter(u => u.id !== currentUser?.id).map((u) => {
+                    const isChecked = groupForm.memberUserIds.includes(u.id);
+                    return (
+                      <label key={u.id} style={{ display: "flex", alignItems: "center", gap: "0.5rem", fontSize: "0.9rem" }}>
+                        <input
+                          type="checkbox"
+                          checked={isChecked}
+                          onChange={() => {
+                            const updated = isChecked 
+                              ? groupForm.memberUserIds.filter(id => id !== u.id)
+                              : [...groupForm.memberUserIds, u.id];
+                            setGroupForm({ ...groupForm, memberUserIds: updated });
+                          }}
+                        />
+                        <span>{u.name} {u.isGuest && "(Guest)"}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="modal-footer">
+                <button type="button" className="btn btn-secondary" onClick={() => setIsGroupOpen(false)}>Cancel</button>
+                <button type="submit" className="btn btn-primary">Create Group</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 2: Add Group Member */}
+      {isAddMemberOpen && (
+        <div className="modal-overlay">
+          <div className="modal-content">
+            <div className="modal-header">
+              <h3>Add Roommate or Guest</h3>
+              <button className="modal-close" onClick={() => setIsAddMemberOpen(false)}>&times;</button>
+            </div>
+            <form onSubmit={handleAddMemberSubmit}>
+              <div className="form-group">
+                <label className="form-label">Full Name:</label>
+                <input 
+                  type="text" 
+                  className="text-input" 
+                  style={{ width: "100%" }}
+                  value={addMemberForm.userName} 
+                  onChange={(e) => setAddMemberForm({ ...addMemberForm, userName: e.target.value })} 
+                  placeholder="e.g. Abhinav"
+                  required
+                />
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">Email (Optional):</label>
+                <input 
+                  type="email" 
+                  className="text-input" 
+                  style={{ width: "100%" }}
+                  value={addMemberForm.email} 
+                  onChange={(e) => setAddMemberForm({ ...addMemberForm, email: e.target.value })} 
+                  placeholder="e.g. abhinav@example.com"
+                />
+              </div>
+
+              <div className="form-group" style={{ display: "flex", alignItems: "center", gap: "0.5rem", margin: "1rem 0" }}>
+                <input 
+                  type="checkbox" 
+                  id="chk-guest"
+                  checked={addMemberForm.isGuest} 
+                  onChange={(e) => setAddMemberForm({ ...addMemberForm, isGuest: e.target.checked })}
+                />
+                <label htmlFor="chk-guest" className="form-label" style={{ margin: 0 }}>Mark as temporary Guest (like Kabir/Dev)</label>
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">Joined At Date:</label>
+                <input 
+                  type="date" 
+                  className="text-input" 
+                  style={{ width: "100%" }}
+                  value={addMemberForm.joinedAt} 
+                  onChange={(e) => setAddMemberForm({ ...addMemberForm, joinedAt: e.target.value })} 
+                  required
+                />
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">Left At Date (Leave empty if active):</label>
+                <input 
+                  type="date" 
+                  className="text-input" 
+                  style={{ width: "100%" }}
+                  value={addMemberForm.leftAt} 
+                  onChange={(e) => setAddMemberForm({ ...addMemberForm, leftAt: e.target.value })}
+                />
+              </div>
+
+              <div className="modal-footer">
+                <button type="button" className="btn btn-secondary" onClick={() => setIsAddMemberOpen(false)}>Cancel</button>
+                <button type="submit" className="btn btn-primary">Add Member</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 3: Edit Member Timeline */}
+      {isEditMemberTimelineOpen && (
+        <div className="modal-overlay">
+          <div className="modal-content">
+            <div className="modal-header">
+              <h3>Adjust Active Timeline</h3>
+              <button className="modal-close" onClick={() => setIsEditMemberTimelineOpen(false)}>&times;</button>
+            </div>
+            <form onSubmit={handleUpdateMemberTimelineSubmit}>
+              <div className="form-group">
+                <label className="form-label">Joined At (Timeline Start):</label>
+                <input 
+                  type="date" 
+                  className="text-input" 
+                  style={{ width: "100%" }}
+                  value={memberTimelineForm.joinedAt} 
+                  onChange={(e) => setMemberTimelineForm({ ...memberTimelineForm, joinedAt: e.target.value })} 
+                  required
+                />
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">Left At (Timeline End - Leave empty if present):</label>
+                <input 
+                  type="date" 
+                  className="text-input" 
+                  style={{ width: "100%" }}
+                  value={memberTimelineForm.leftAt} 
+                  onChange={(e) => setMemberTimelineForm({ ...memberTimelineForm, leftAt: e.target.value })}
+                />
+              </div>
+
+              <div className="modal-footer">
+                <button type="button" className="btn btn-secondary" onClick={() => setIsEditMemberTimelineOpen(false)}>Cancel</button>
+                <button type="submit" className="btn btn-primary">Save Changes</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 4: Record Direct Payment */}
       {isSettlementOpen && (
         <div className="modal-overlay">
           <div className="modal-content">
@@ -1087,9 +1739,9 @@ export default function SharedExpensesDashboard() {
                   required
                 >
                   <option value="" disabled>Select a roommate...</option>
-                  {users.filter(u => u.id !== currentUser?.id && !u.isGuest).map((u) => (
-                    <option key={u.id} value={u.id}>
-                      {u.name}
+                  {activeGroup?.members.filter(u => u.userId !== currentUser?.id).map((u) => (
+                    <option key={u.id} value={u.userId}>
+                      {u.user.name}
                     </option>
                   ))}
                 </select>
@@ -1144,6 +1796,257 @@ export default function SharedExpensesDashboard() {
                 >
                   Save Payment
                 </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 5: Add or Edit Manual Expense */}
+      {isExpenseOpen && (
+        <div className="modal-overlay">
+          <div className="modal-content" style={{ maxWidth: "550px" }}>
+            <div className="modal-header">
+              <h3>{editingExpenseId ? "Edit Expense Details" : "Log New Shared Expense"}</h3>
+              <button className="modal-close" onClick={() => setIsExpenseOpen(false)}>&times;</button>
+            </div>
+            <form onSubmit={handleExpenseSubmit}>
+              <div className="grid-2">
+                <div className="form-group">
+                  <label className="form-label">Description / Bill Name:</label>
+                  <input 
+                    type="text" 
+                    className="text-input" 
+                    style={{ width: "100%" }}
+                    value={expenseForm.description}
+                    onChange={(e) => setExpenseForm({ ...expenseForm, description: e.target.value })}
+                    placeholder="e.g. Grocery DMart"
+                    required
+                  />
+                </div>
+                <div className="form-group">
+                  <label className="form-label">Expense Date:</label>
+                  <input 
+                    type="date" 
+                    className="text-input" 
+                    style={{ width: "100%" }}
+                    value={expenseForm.expenseDate}
+                    onChange={(e) => {
+                      const updatedDate = e.target.value;
+                      // When date changes, active member list changes. Reinitialize splits for new list.
+                      if (activeGroup) {
+                        const activeList = activeGroup.members.filter((m) =>
+                          isMemberActiveOnDate(m, updatedDate)
+                        );
+                        const defaultSplits: Record<string, string> = {};
+                        activeList.forEach((m) => {
+                          if (expenseForm.splitType === "equal") {
+                            defaultSplits[m.userId] = "true";
+                          } else if (expenseForm.splitType === "percentage") {
+                            defaultSplits[m.userId] = (100 / activeList.length).toFixed(1);
+                          } else if (expenseForm.splitType === "share") {
+                            defaultSplits[m.userId] = "1";
+                          } else if (expenseForm.splitType === "unequal") {
+                            defaultSplits[m.userId] = "0";
+                          }
+                        });
+                        setExpenseForm({
+                          ...expenseForm,
+                          expenseDate: updatedDate,
+                          splits: defaultSplits,
+                        });
+                      }
+                    }}
+                    required
+                  />
+                </div>
+              </div>
+
+              <div className="grid-3">
+                <div className="form-group">
+                  <label className="form-label">Amount:</label>
+                  <input 
+                    type="number" 
+                    step="0.01"
+                    className="text-input" 
+                    style={{ width: "100%" }}
+                    value={expenseForm.amount}
+                    onChange={(e) => setExpenseForm({ ...expenseForm, amount: e.target.value })}
+                    placeholder="0.00"
+                    required
+                  />
+                </div>
+                <div className="form-group">
+                  <label className="form-label">Currency:</label>
+                  <select 
+                    className="select-input"
+                    style={{ width: "100%" }}
+                    value={expenseForm.currency}
+                    onChange={(e) => setExpenseForm({ ...expenseForm, currency: e.target.value })}
+                  >
+                    <option value="INR">INR (₹)</option>
+                    <option value="USD">USD ($)</option>
+                  </select>
+                </div>
+                {expenseForm.currency === "USD" && (
+                  <div className="form-group">
+                    <label className="form-label">Exchange Rate (INR):</label>
+                    <input 
+                      type="number" 
+                      step="0.01"
+                      className="text-input" 
+                      style={{ width: "100%" }}
+                      value={expenseForm.exchangeRateUsed}
+                      onChange={(e) => setExpenseForm({ ...expenseForm, exchangeRateUsed: e.target.value })}
+                      placeholder="83.00"
+                      required
+                    />
+                  </div>
+                )}
+              </div>
+
+              <div className="grid-2">
+                <div className="form-group">
+                  <label className="form-label">Paid By:</label>
+                  <select 
+                    className="select-input"
+                    style={{ width: "100%" }}
+                    value={expenseForm.paidById}
+                    onChange={(e) => setExpenseForm({ ...expenseForm, paidById: e.target.value })}
+                    required
+                  >
+                    {activeGroup?.members.map(m => (
+                      <option key={m.userId} value={m.userId}>{m.user.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="form-group">
+                  <label className="form-label">Split Method:</label>
+                  <select 
+                    className="select-input"
+                    style={{ width: "100%" }}
+                    value={expenseForm.splitType}
+                    onChange={(e) => initFormSplits(e.target.value, getActiveTimelineMembers())}
+                    required
+                  >
+                    <option value="equal">Equally (Equal)</option>
+                    <option value="percentage">Percentage (%)</option>
+                    <option value="share">Shares / Ratio</option>
+                    <option value="unequal">Unequally (INR Amounts)</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Dynamic Split Splits Form List */}
+              <div className="form-group" style={{ margin: "1rem 0" }}>
+                <label className="form-label" style={{ borderBottom: "1px solid var(--border-color)", paddingBottom: "0.25rem", marginBottom: "0.5rem" }}>
+                  Split Allocations (Active timeline members on this date):
+                </label>
+                <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem", maxHeight: "150px", overflowY: "auto", padding: "0.25rem" }}>
+                  {getActiveTimelineMembers().map((m) => {
+                    const isChecked = expenseForm.splits[m.userId] === "true";
+                    
+                    return (
+                      <div key={m.userId} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "0.9rem" }}>
+                        <span>{m.user.name}</span>
+                        <div>
+                          {expenseForm.splitType === "equal" && (
+                            <input
+                              type="checkbox"
+                              checked={isChecked}
+                              onChange={(e) => setExpenseForm({
+                                ...expenseForm,
+                                splits: {
+                                  ...expenseForm.splits,
+                                  [m.userId]: e.target.checked ? "true" : "false",
+                                }
+                              })}
+                            />
+                          )}
+
+                          {expenseForm.splitType === "percentage" && (
+                            <div style={{ display: "flex", alignItems: "center", gap: "0.25rem" }}>
+                              <input
+                                type="number"
+                                className="text-input"
+                                style={{ width: "70px", padding: "0.25rem" }}
+                                value={expenseForm.splits[m.userId] || "0"}
+                                onChange={(e) => setExpenseForm({
+                                  ...expenseForm,
+                                  splits: {
+                                    ...expenseForm.splits,
+                                    [m.userId]: e.target.value,
+                                  }
+                                })}
+                                required
+                              />
+                              <span>%</span>
+                            </div>
+                          )}
+
+                          {expenseForm.splitType === "share" && (
+                            <div style={{ display: "flex", alignItems: "center", gap: "0.25rem" }}>
+                              <input
+                                type="number"
+                                step="0.1"
+                                className="text-input"
+                                style={{ width: "70px", padding: "0.25rem" }}
+                                value={expenseForm.splits[m.userId] || "1"}
+                                onChange={(e) => setExpenseForm({
+                                  ...expenseForm,
+                                  splits: {
+                                    ...expenseForm.splits,
+                                    [m.userId]: e.target.value,
+                                  }
+                                })}
+                                required
+                              />
+                              <span>shares</span>
+                            </div>
+                          )}
+
+                          {expenseForm.splitType === "unequal" && (
+                            <div style={{ display: "flex", alignItems: "center", gap: "0.25rem" }}>
+                              <span>₹</span>
+                              <input
+                                type="number"
+                                step="0.01"
+                                className="text-input"
+                                style={{ width: "90px", padding: "0.25rem" }}
+                                value={expenseForm.splits[m.userId] || "0"}
+                                onChange={(e) => setExpenseForm({
+                                  ...expenseForm,
+                                  splits: {
+                                    ...expenseForm.splits,
+                                    [m.userId]: e.target.value,
+                                  }
+                                })}
+                                required
+                              />
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">Notes / Details:</label>
+                <input 
+                  type="text" 
+                  className="text-input" 
+                  style={{ width: "100%" }}
+                  value={expenseForm.notes}
+                  onChange={(e) => setExpenseForm({ ...expenseForm, notes: e.target.value })}
+                  placeholder="e.g. Dmart grocery items"
+                />
+              </div>
+
+              <div className="modal-footer">
+                <button type="button" className="btn btn-secondary" onClick={() => setIsExpenseOpen(false)}>Cancel</button>
+                <button type="submit" className="btn btn-primary">Save Expense</button>
               </div>
             </form>
           </div>

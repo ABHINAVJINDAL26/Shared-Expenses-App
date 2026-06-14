@@ -29,17 +29,104 @@ This document lists the 20 deliberate data anomalies discovered in [Expenses Exp
 | 19 | Stale membership — rows after Meera left (end-March) still include her in `split_with` (e.g. 02-04-2026 Groceries) | Membership/expense date mismatch | **Flagged as stale membership** → Default action is **Exclude and redistribute** (removes Meera and splits share among remaining active users). |
 | 20 | "Sam deposit share" (08-04) — paid_by=Sam, split_with=Aisha only, looks like a deposit/payment | Mislabeled settlement | **Auto-detected as settlement** → Stored as `Settlement` transaction from Sam to Aisha. |
 
----
+## 2. Database Schema Details
 
-## 2. Database Schema
+We use **Prisma 7** over **SQLite** (via LibSQL driver) to enforce relational integrity. The models, fields, and definitions are detailed below:
 
-We use **Prisma** over **SQLite** (relational, file-based). The models are:
+### A. User Model
+Tracks individual flatmates and guests. Registered users have login credentials.
+| Field | Type | Attributes | Description |
+|---|---|---|---|
+| `id` | String | `@id` | Unique UUID primary key. |
+| `name` | String | `@unique` | Canonical name of the flatmate (normalized). |
+| `email` | String? | `@unique` | Optional login email address. |
+| `passwordHash` | String? | - | SHA-256 password hash for login. Null for guests. |
+| `isGuest` | Boolean | `default(false)` | Flag to mark temporary guests (e.g. Kabir, Dev). |
+| `createdAt` | DateTime | `default(now())` | Timestamp when the user profile was registered. |
 
-*   **`User`**: System users (Aisha, Rohan, Priya, Meera, Sam, Dev, Kabir). Contains `isGuest` flag to differentiate permanent roommates from one-time trip guests.
-*   **`Group`**: Shared spaces (e.g., "Flat Share").
-*   **`GroupMember`**: Time-based membership mapping. Holds `joinedAt` and `leftAt` (nullable) dates per user, allowing queries to dynamically filter who is active.
-*   **`Expense`**: Shared expense records. Stores details, currency, raw amount, and computed INR amount.
-*   **`ExpenseSplit`**: User-specific splits of an expense, holding both the raw `shareValue` (e.g., 30%, 1 share) and `computedAmountInr` (final rounded INR share).
-*   **`Settlement`**: direct debt payment between roommates (e.g., Rohan paid Aisha back).
-*   **`ImportBatch`**: Tracks CSV imports, recording upload timestamp and completion status.
-*   **`ImportAnomaly`**: Staging area for rows flagged as anomalous. Stores raw row JSON, anomaly type, descriptions, suggested actions, and the user's chosen decision.
+### B. Group Model
+Groups together separate flat share spaces or trips.
+| Field | Type | Attributes | Description |
+|---|---|---|---|
+| `id` | String | `@id` | Unique UUID primary key. |
+| `name` | String | - | Name of the group (e.g. "Flat Share", "Goa Trip"). |
+| `createdAt` | DateTime | `default(now())` | Date when group workspace was initialized. |
+
+### C. GroupMember Model
+Represents the **Time-Based Timeline Membership** mapping flatmates to groups.
+| Field | Type | Attributes | Description |
+|---|---|---|---|
+| `id` | String | `@id` | Unique UUID primary key. |
+| `groupId` | String | Relation FK | Associated Group ID. |
+| `userId` | String | Relation FK | Associated User ID. |
+| `joinedAt` | DateTime | - | Start date of active flat share timeline membership. |
+| `leftAt` | DateTime? | - | End date of membership. Null if currently active. |
+
+### D. Expense Model
+Stores shared expense transaction headers.
+| Field | Type | Attributes | Description |
+|---|---|---|---|
+| `id` | String | `@id` | Unique UUID primary key. |
+| `groupId` | String | Relation FK | Group this bill belongs to. |
+| `description` | String | - | Label of the expense (e.g. "Rent"). |
+| `amount` | Float | - | Original bill amount logged. |
+| `currency` | String | - | Currency (INR/USD). |
+| `amountInInr` | Float | - | Normalised value in base INR (converted if USD). |
+| `exchangeRateUsed`| Float | - | Rate used for INR conversion (default 1.00; 83.00 for USD). |
+| `paidById` | String | Relation FK | User who paid the bill. |
+| `splitType` | String | - | Split method (`equal`, `unequal`, `percentage`, `share`). |
+| `expenseDate` | DateTime | - | Calendar date of the expense (used for timeline checks). |
+| `source` | String | - | Transaction source (`manual` or `csv_import`). |
+| `importBatchId` | String? | Relation FK | Reference to parent CSV import batch. |
+| `status` | String | - | Row status (`active`, `flagged`, `archived`). |
+| `notes` | String? | - | Optional extra details. |
+
+### E. ExpenseSplit Model
+Stores individual user share allocations per expense.
+| Field | Type | Attributes | Description |
+|---|---|---|---|
+| `id` | String | `@id` | Unique UUID primary key. |
+| `expenseId` | String | Relation FK | Associated parent Expense. |
+| `userId` | String | Relation FK | Target user allocated for the split. |
+| `shareValue` | Float | - | Raw split ratio (e.g., 30% percentage, 1.5 shares, ₹500 unequal). |
+| `computedAmountInr`| Float | - | Final rounded amount in INR (adjusted for rounding remainder). |
+
+### F. Settlement Model
+Tracks direct peer-to-peer payments chukana (e.g. Rohan paid Aisha back).
+| Field | Type | Attributes | Description |
+|---|---|---|---|
+| `id` | String | `@id` | Unique UUID primary key. |
+| `groupId` | String | Relation FK | Associated Group ID. |
+| `fromUserId` | String | Relation FK | Debtor roommate sending the money. |
+| `toUserId` | String | Relation FK | Creditor roommate receiving the money. |
+| `amount` | Float | - | Raw settlement amount sent. |
+| `currency` | String | - | Currency (INR/USD). |
+| `amountInInr` | Float | - | Total converted value in INR. |
+| `note` | String? | - | Optional note detail. |
+| `settledAt` | DateTime | - | Date when settlement payment took place. |
+| `source` | String | - | Transaction source (`manual` or `csv_import`). |
+
+### G. ImportBatch Model
+Groups CSV upload collections.
+| Field | Type | Attributes | Description |
+|---|---|---|---|
+| `id` | String | `@id` | Unique UUID primary key. |
+| `groupId` | String | Relation FK | Associated Group ID. |
+| `filename` | String | - | Name of imported CSV spreadsheet. |
+| `importedAt` | DateTime | `default(now())` | Import timestamp. |
+| `status` | String | - | Batch state (`pending`, `completed`, `failed`). |
+
+### H. ImportAnomaly Model
+Stores detected CSV import data issues for staging approval.
+| Field | Type | Attributes | Description |
+|---|---|---|---|
+| `id` | String | `@id` | Unique UUID primary key. |
+| `importBatchId` | String | Relation FK | Associated parent ImportBatch. |
+| `rowNumber` | Int | - | CSV row index where anomaly was found. |
+| `rawRowData` | String | - | JSON string of the raw CSV columns. |
+| `anomalyType` | String | - | Category (e.g. `duplicate`, `stale_membership`). |
+| `description` | String | - | Detail of why this row is flagged. |
+| `suggestedAction` | String | - | Recommended resolution strategy. |
+| `userDecision` | String? | - | Final action chosen by the user in the wizard. |
+| `resolved` | Boolean | `default(false)` | Whether the anomaly has been reviewed. |
+
