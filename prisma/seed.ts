@@ -2,6 +2,7 @@ import "dotenv/config";
 import { PrismaClient } from "@prisma/client";
 import { PrismaLibSql } from "@prisma/adapter-libsql";
 import { createClient } from "@libsql/client";
+import crypto from "crypto";
 
 const adapter = new PrismaLibSql({
   url: process.env.DATABASE_URL || "file:dev.db",
@@ -25,27 +26,30 @@ async function main() {
   await prisma.group.deleteMany();
   await prisma.user.deleteMany();
 
+  const hashPassword = (pwd: string) => crypto.createHash("sha256").update(pwd).digest("hex");
+  const defaultHash = hashPassword("password123");
+
   // Create users
   const aisha = await prisma.user.create({
-    data: { name: "Aisha", email: "aisha@example.com" },
+    data: { name: "Aisha", email: "aisha@example.com", passwordHash: defaultHash },
   });
   const rohan = await prisma.user.create({
-    data: { name: "Rohan", email: "rohan@example.com" },
+    data: { name: "Rohan", email: "rohan@example.com", passwordHash: defaultHash },
   });
   const priya = await prisma.user.create({
-    data: { name: "Priya", email: "priya@example.com" },
+    data: { name: "Priya", email: "priya@example.com", passwordHash: defaultHash },
   });
   const meera = await prisma.user.create({
-    data: { name: "Meera", email: "meera@example.com" },
+    data: { name: "Meera", email: "meera@example.com", passwordHash: defaultHash },
   });
   const sam = await prisma.user.create({
-    data: { name: "Sam", email: "sam@example.com" },
+    data: { name: "Sam", email: "sam@example.com", passwordHash: defaultHash },
   });
   const dev = await prisma.user.create({
-    data: { name: "Dev", email: "dev@example.com", isGuest: true },
+    data: { name: "Dev", email: "dev@example.com", isGuest: true, passwordHash: null },
   });
   const kabir = await prisma.user.create({
-    data: { name: "Kabir", email: "kabir@example.com", isGuest: true },
+    data: { name: "Kabir", email: "kabir@example.com", isGuest: true, passwordHash: null },
   });
 
   console.log("Users created:", {
