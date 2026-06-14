@@ -71,6 +71,7 @@ export default function SharedExpensesDashboard() {
   const [selectedGroupId, setSelectedGroupId] = useState<string>("");
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [isAuthLoading, setIsAuthLoading] = useState(true);
+  const [isSaving, setIsSaving] = useState(false);
 
   // Import State
   const [file, setFile] = useState<File | null>(null);
@@ -317,7 +318,8 @@ export default function SharedExpensesDashboard() {
 
   // Confirm Import Batch
   const handleConfirmImport = async () => {
-    if (!stagedBatchId) return;
+    if (!stagedBatchId || isSaving) return;
+    setIsSaving(true);
 
     try {
       const res = await fetch("/api/import/confirm", {
@@ -350,13 +352,16 @@ export default function SharedExpensesDashboard() {
       }
     } catch (err: any) {
       alert("Network error confirming import: " + err.message);
+    } finally {
+      setIsSaving(false);
     }
   };
 
   // Submit manual settlement
   const handleManualSettlementSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!currentUser || !selectedGroupId) return;
+    if (!currentUser || !selectedGroupId || isSaving) return;
+    setIsSaving(true);
 
     try {
       const res = await fetch("/api/settlements", {
@@ -382,6 +387,8 @@ export default function SharedExpensesDashboard() {
       }
     } catch (err: any) {
       alert("Network error: " + err.message);
+    } finally {
+      setIsSaving(false);
     }
   };
 
@@ -511,7 +518,8 @@ export default function SharedExpensesDashboard() {
   // Save manual Expense (Add or Edit)
   const handleExpenseSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedGroupId) return;
+    if (!selectedGroupId || isSaving) return;
+    setIsSaving(true);
 
     const amt = parseFloat(expenseForm.amount);
     if (isNaN(amt) || amt <= 0) {
@@ -600,13 +608,16 @@ export default function SharedExpensesDashboard() {
       }
     } catch (err: any) {
       alert("Network error saving expense: " + err.message);
+    } finally {
+      setIsSaving(false);
     }
   };
 
   // Save manual Group
   const handleGroupSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!groupForm.name) return;
+    if (!groupForm.name || isSaving) return;
+    setIsSaving(true);
 
     try {
       const res = await fetch("/api/groups", {
@@ -625,13 +636,16 @@ export default function SharedExpensesDashboard() {
       }
     } catch (err) {
       console.error(err);
+    } finally {
+      setIsSaving(false);
     }
   };
 
   // Save manual Group Member Add
   const handleAddMemberSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedGroupId || !addMemberForm.userName) return;
+    if (!selectedGroupId || !addMemberForm.userName || isSaving) return;
+    setIsSaving(true);
 
     try {
       const res = await fetch(`/api/groups/${selectedGroupId}/members`, {
@@ -656,13 +670,16 @@ export default function SharedExpensesDashboard() {
       }
     } catch (err) {
       console.error(err);
+    } finally {
+      setIsSaving(false);
     }
   };
 
   // Save Member Timeline Date Edit
   const handleUpdateMemberTimelineSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedGroupId || !selectedMemberId) return;
+    if (!selectedGroupId || !selectedMemberId || isSaving) return;
+    setIsSaving(true);
 
     try {
       const res = await fetch(`/api/groups/${selectedGroupId}/members`, {
@@ -686,6 +703,8 @@ export default function SharedExpensesDashboard() {
       }
     } catch (err) {
       console.error(err);
+    } finally {
+      setIsSaving(false);
     }
   };
 
@@ -1352,8 +1371,9 @@ export default function SharedExpensesDashboard() {
                   <button 
                     className="btn btn-primary"
                     onClick={handleConfirmImport}
+                    disabled={isSaving}
                   >
-                    Resolve & Import Staged Rows
+                    {isSaving ? "Importing..." : "Resolve & Import Staged Rows"}
                   </button>
                 </div>
               </div>
@@ -1588,7 +1608,9 @@ export default function SharedExpensesDashboard() {
 
               <div className="modal-footer">
                 <button type="button" className="btn btn-secondary" onClick={() => setIsGroupOpen(false)}>Cancel</button>
-                <button type="submit" className="btn btn-primary">Create Group</button>
+                <button type="submit" className="btn btn-primary" disabled={isSaving}>
+                  {isSaving ? "Creating..." : "Create Group"}
+                </button>
               </div>
             </form>
           </div>
@@ -1664,7 +1686,9 @@ export default function SharedExpensesDashboard() {
 
               <div className="modal-footer">
                 <button type="button" className="btn btn-secondary" onClick={() => setIsAddMemberOpen(false)}>Cancel</button>
-                <button type="submit" className="btn btn-primary">Add Member</button>
+                <button type="submit" className="btn btn-primary" disabled={isSaving}>
+                  {isSaving ? "Adding..." : "Add Member"}
+                </button>
               </div>
             </form>
           </div>
@@ -1705,7 +1729,9 @@ export default function SharedExpensesDashboard() {
 
               <div className="modal-footer">
                 <button type="button" className="btn btn-secondary" onClick={() => setIsEditMemberTimelineOpen(false)}>Cancel</button>
-                <button type="submit" className="btn btn-primary">Save Changes</button>
+                <button type="submit" className="btn btn-primary" disabled={isSaving}>
+                  {isSaving ? "Saving..." : "Save Changes"}
+                </button>
               </div>
             </form>
           </div>
@@ -1790,11 +1816,12 @@ export default function SharedExpensesDashboard() {
                 >
                   Cancel
                 </button>
-                <button 
+                 <button 
                   type="submit" 
                   className="btn btn-primary"
+                  disabled={isSaving}
                 >
-                  Save Payment
+                  {isSaving ? "Saving..." : "Save Payment"}
                 </button>
               </div>
             </form>
@@ -2046,7 +2073,9 @@ export default function SharedExpensesDashboard() {
 
               <div className="modal-footer">
                 <button type="button" className="btn btn-secondary" onClick={() => setIsExpenseOpen(false)}>Cancel</button>
-                <button type="submit" className="btn btn-primary">Save Expense</button>
+                <button type="submit" className="btn btn-primary" disabled={isSaving}>
+                  {isSaving ? "Saving..." : "Save Expense"}
+                </button>
               </div>
             </form>
           </div>
