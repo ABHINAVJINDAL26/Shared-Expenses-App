@@ -747,9 +747,9 @@ export default function SharedExpensesDashboard() {
           <h1 className="logo-text">Splitwise Pro</h1>
         </div>
 
-        <div style={{ display: "flex", alignItems: "center", gap: "1.5rem" }}>
+        <div className="header-right">
           {/* Group Switcher Selector */}
-          <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+          <div className="header-group-switcher">
             <span style={{ fontSize: "0.85rem", color: "var(--text-secondary)" }}>Active Group:</span>
             <select
               className="select-input"
